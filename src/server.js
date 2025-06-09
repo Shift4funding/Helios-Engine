@@ -1,32 +1,35 @@
 // server.js
 
-const express = require('express');
-const dotenv = require('dotenv');
+
+require('dotenv').config();
 const app = require('./app');
+const { logger } = require('./utils');
 
-// Load environment variables from .env file
-dotenv.config();
+const port = process.env.PORT || 3000;
 
-// Verify environment variables are loaded
-if (!process.env.PERPLEXITY_API_KEY) {
-    console.error('WARNING: Perplexity API key is not set in environment variables');
+const gracefulShutdown = (server, code) => {
+    logger.info(`Received ${code}. Starting graceful shutdown...`);
+    server.close(() => {
+        logger.info('Server closed');
+        process.exit(code === 'SIGTERM' ? 0 : 1);
+    });
+};
+
+process.on('uncaughtException', (err) => {
+    logger.error('UNCAUGHT EXCEPTION! 💥 Shutting down...');
+    logger.error(err.name, err.message, err.stack);
     process.exit(1);
-}
-
-// Check if the API key has a valid format
-if (process.env.PERPLEXITY_API_KEY?.startsWith('pplx-')) {
-    const maskedKey = process.env.PERPLEXITY_API_KEY.substring(0, 10) + '...' + 
-                      process.env.PERPLEXITY_API_KEY.slice(-4);
-    console.log('API Key loaded:', maskedKey);
-} else {
-    console.error('WARNING: Invalid Perplexity API key format');
-    process.exit(1);
-}
-
-// Set the port from environment variables or default to 3000
-const PORT = process.env.PORT || 3000;
-
-// Start the server
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
 });
+
+const server = app.listen(port, () => {
+    logger.info(`Server running on port ${port}`);
+});
+
+process.on('unhandledRejection', (err) => {
+    logger.error('UNHANDLED REJECTION! 💥 Shutting down...');
+    logger.error(err.name, err.message);
+    gracefulShutdown(server, 'UNHANDLED REJECTION');
+});
+
+process.on('SIGTERM', () => gracefulShutdown(server, 'SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown(server, 'SIGINT'));

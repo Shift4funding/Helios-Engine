@@ -1,72 +1,87 @@
 # Bank Statement Analyzer API
 
-This project is a Node.js and Express.js backend API designed to analyze bank statements. It allows users to upload PDF files of bank statements, which are then processed to extract relevant information. The API integrates with external LLM APIs for further analysis.
+REST API for analyzing bank statements using LLM technology.
 
-## Project Structure
+## Setup
 
-```
-bank-statement-analyzer-api
-├── src
-│   ├── app.js
-│   ├── server.js
-│   ├── routes
-│   │   └── analysisRoutes.js
-│   ├── controllers
-│   │   └── analysisController.js
-│   ├── services
-│   │   ├── llmService.js
-│   │   └── pdfParserService.js
-│   └── middleware
-│       └── authMiddleware.js
-├── uploads
-├── .env.example
-├── .gitignore
-├── package.json
-└── README.md
+1. Install dependencies:
+```bash
+npm install
 ```
 
-## Features
-
-- Upload bank statement PDF files via a POST request.
-- Parse PDF files to extract account details and transactions.
-- Integrate with external LLM APIs (Perplexity and DeepSeek) for advanced analysis.
-- Return a JSON response with the analysis results.
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js (version 14 or higher)
-- npm (Node package manager)
-
-### Installation
-
-1. Clone the repository:
-   ```
-   git clone <repository-url>
-   cd bank-statement-analyzer-api
-   ```
-
-2. Install dependencies:
-   ```
-   npm install
-   ```
-
-3. Create a `.env` file based on the `.env.example` file and fill in the required environment variables.
-
-### Running the Application
-
-To start the server in development mode, use:
+2. Configure environment variables:
+```bash
+cp .env.example .env
 ```
+
+3. Start the server:
+```bash
+npm start
+```
+
+## Docker Deployment
+
+```bash
+# Build image
+npm run docker:build
+
+# Run container
+npm run docker:run
+```
+
+## API Documentation
+
+Access the API documentation at `/api-docs` when the server is running.
+
+## Environment Variables
+
+- `NODE_ENV`: Environment (development/production)
+- `PORT`: Server port (default: 3001)
+- `API_KEY`: API authentication key
+- `PERPLEXITY_API_KEY`: Perplexity API key
+- `ALLOWED_ORIGINS`: Comma-separated list of allowed CORS origins
+
+## Cache Configuration
+The API uses Redis for caching analysis results. Configure these environment variables:
+
+- `REDIS_HOST`: Redis server host
+- `REDIS_PORT`: Redis server port
+- `REDIS_PASSWORD`: Redis password
+
+## Development with Redis
+1. Start Redis locally:
+```bash
+docker run --name redis -p 6379:6379 -d redis:alpine
+```
+
+2. Start the API:
+```bash
 npm run dev
 ```
 
-The server will be running on `http://localhost:3000` (or the port specified in your `.env` file).
+## Monitoring
 
-### API Endpoints
+The API provides monitoring endpoints:
 
-- **POST /api/analyze**: Upload a bank statement PDF for analysis.
+- `/monitoring/health` - Health check with service status
+- `/monitoring/metrics` - Prometheus metrics
+- `/monitoring/stats` - Usage statistics
 
-## License
+### Metrics Available
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+- HTTP request duration
+- Statement analysis counts
+- Cache hit/miss rates
+- System metrics (CPU, Memory, etc.)
+
+### Prometheus Integration
+
+To scrape metrics with Prometheus, add this to your prometheus.yml:
+
+```yaml
+scrape_configs:
+  - job_name: 'bank-statement-analyzer'
+    metrics_path: '/monitoring/metrics'
+    static_configs:
+      - targets: ['localhost:3001']
+```
