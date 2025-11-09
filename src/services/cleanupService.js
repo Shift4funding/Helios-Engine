@@ -34,4 +34,4 @@ class CleanupService {
     }
 }
 
-module.exports = new CleanupService();
+export default new CleanupService();

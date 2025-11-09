@@ -548,4 +548,4 @@ class BankStatementQueryService {
   }
 }
 
-module.exports = new BankStatementQueryService();
+export default new BankStatementQueryService();

@@ -1,7 +1,8 @@
-const express = require('express');
-const { getAnalysisHistory } = require('../controllers/analysisController');
+import express from 'express';
+import { getAnalysisHistory } from '../controllers/auditController.js';
+
 const router = express.Router();
 
 router.get('/history', getAnalysisHistory);
 
-module.exports = router;
+export default router;

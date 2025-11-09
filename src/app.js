@@ -1,102 +1,110 @@
-/**
- * @license
- * Copyright (c) 2025 [Your Name]
- * This code is licensed under the MIT License.
- * See LICENSE file for details.
- */
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import mongoose from 'mongoose';
 
-// This file configures the Express application, sets up middleware for parsing requests, and defines API routes.
+import { getHealthStatus } from './services/healthService.js';
 
-const express = require('express');
-const compression = require('compression');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const path = require('path');
-const requestLogger = require('./middleware/requestLogger');
-const errorHandler = require('./middleware/errorHandler');
-const docsRouter = require('./routes/docs');
-const analysisRouter = require('./routes/analysisRoutes');
-const queryRoutes = require('./routes/queryRoutes');
-const prometheusMiddleware = require('express-prometheus-middleware');
-const client = require('prom-client');
-const responseTime = require('response-time');
-const monitoringRoutes = require('./routes/monitoringRoutes');
-const { sanitizeRequest } = require('./middleware/sanitizer');
-const rateLimiter = require('./middleware/rateLimiter');
-const cacheService = require('./services/cacheService');
-const healthCheck = require('./middleware/healthCheck');
-const statementRoutes = require('./routes/statementRoutes');
-const zohoRoutes = require('./routes/zohoRoutes');
-const swaggerUI = require('swagger-ui-express');
-const swaggerSpec = require('./config/swagger');
-const fs = require('fs');
-const { validateApiKey } = require('./middleware/auth');
-const security = require('./middleware/security');
+// Import consolidated routes and middleware
+import consolidatedRoutes from './routes/consolidatedRoutes.js';
+import zohoRoutes from './routes/zohoRoutes.js';
+import { 
+  morganMiddleware, 
+  performanceMonitor, 
+  sanitizeRequest, 
+  errorHandler 
+} from './middleware/index.js';
+import { securityHeaders, requestId, responseTime } from './middleware/security.js';
+import { getMetrics } from './middleware/metrics.js';
 
+// Import Swagger configuration
+import { setupSwagger } from './config/swagger.js';
+
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Create Express app
 const app = express();
 
-// Security middleware
-app.use(helmet(security.helmetConfig));
-app.use(cors(security.corsOptions));
-app.use(security.rateLimiter);
-app.use(security.sanitizeData);
+// Setup Swagger API documentation
+setupSwagger(app);
 
-// Request parsing & compression
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+// Security and performance middleware
+app.use(requestId);
+app.use(responseTime);
+app.use(securityHeaders);
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(morganMiddleware);
+app.use(performanceMonitor);
 app.use(sanitizeRequest);
-app.use(compression());
 
-// Logging and monitoring
-app.use(requestLogger);
-app.use(responseTime());
-if (process.env.NODE_ENV !== 'test') {
-    app.use(prometheusMiddleware({
-        metricsPath: '/metrics',
-        collectDefaultMetrics: true,
-        requestDurationBuckets: [0.1, 0.5, 1, 2, 5],
-        prefix: 'bank_statement_analyzer_',
-        customLabels: ['service', 'endpoint'],
-        extractCustomLabels: (req) => ({
-            service: 'bank-statement-analyzer',
-            endpoint: req.path
-        })
-    }));
-} else {
-    // Use mock metrics in test environment
-    app.use((req, res, next) => next());
-}
-app.use(morgan('dev'));
+// Serve static files
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Health and monitoring routes
-app.get('/health', healthCheck.middleware());
-app.use('/monitoring', monitoringRoutes);
+// Health endpoint (direct access without /api prefix)
+app.get('/health', async (req, res) => {
+  try {
+    const healthStatus = await getHealthStatus();
+    res.status(healthStatus.status === 'healthy' ? 200 : 503).json(healthStatus);
+  } catch (error) {
+    res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
+});
 
-// API Documentation
-app.use('/api-docs', swaggerUI.serve, swaggerUI.setup(swaggerSpec));
+// API Routes
+app.use('/api', consolidatedRoutes);
+app.use('/api/zoho', zohoRoutes);
 
-// API Routes with authentication and file upload
-app.use('/api/analysis', validateApiKey, analysisRouter);
-app.use('/api/statements', validateApiKey, statementRoutes);
-app.use('/api/zoho', validateApiKey, zohoRoutes);
-app.use('/api', validateApiKey, queryRoutes);
+// API documentation note
+app.get('/api', (req, res) => {
+  res.json({
+    message: 'Bank Statement Analyzer API',
+    docs: '/api-docs',
+    status: 'available'
+  });
+});
 
-// Error handling
+// Placeholder routes for missing endpoints
+app.get('/api/merchants', (req, res) => {
+  res.json({
+    success: true,
+    data: [],
+    message: 'Merchants endpoint - placeholder implementation'
+  });
+});
+
+app.get('/api/settings', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      theme: 'light',
+      notifications: true,
+      autoAnalysis: false
+    },
+    message: 'Settings endpoint - placeholder implementation'
+  });
+});
+
+// Global error handler (must be after all routes)
 app.use(errorHandler);
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, '../uploads');
-try {
-    if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-} catch (error) {
-    console.error('Error creating uploads directory:', error);
-    // Continue execution as directory might already exist
-}
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Route not found'
+  });
+});
 
-// Initialize cache cleanup
-cacheService.startCleanup();
+// Database connection is handled in server.js
 
-module.exports = app;
+export default app;

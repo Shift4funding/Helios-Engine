@@ -1,466 +1,449 @@
-import Transaction from '../models/Transaction.js';
+import logger from '../utils/logger.js';
+import { LLMCategorizationService } from './llmCategorizationService.js';
+import TransactionCategory from '../models/TransactionCategory.js';
 
+/**
+ * Service for analyzing risk based on bank statements and transactions
+ */
 class RiskAnalysisService {
-    constructor() {
-        this.riskThresholds = {
-            nsfLimit: 2,
-            overdraftLimit: 3,
-            largeDepositThreshold: 10000,
-            minDailyBalance: 1000,
-            depositVolatility: 0.3,
-            patternThreshold: 0.3
-        };
+  constructor() {
+    this.logger = logger;
+    this.llmService = new LLMCategorizationService();
+  }
+
+  /**
+   * Calculates the number of NSF (Non-Sufficient Funds) fees in the transactions
+   * @param {Array} transactions The list of transactions to analyze
+   * @returns {number} The count of NSF fees
+   */
+  calculateNSFCount(transactions) {
+    if (!Array.isArray(transactions)) {
+      throw new Error('Transactions must be an array');
     }
+    return transactions.filter(t => {
+      const description = t.description.toUpperCase();
+      return description.includes('NSF') || 
+             description.includes('INSUFFICIENT FUNDS') ||
+             description.includes('OVERDRAFT');
+    }).length;
+  }
 
-    async analyzeStatementRisk(transactions) {
-        const riskMetrics = {
-            nsfCount: 0,
-            overdraftCount: 0,
-            largeDeposits: [],
-            averageDailyBalance: 0,
-            depositVolatility: 0,
-            overallRiskScore: 100,
-            riskFlags: []
-        };
-
-        try {
-            // Analyze NSF and Overdraft Patterns
-            transactions.forEach(transaction => {
-                const metrics = transaction.riskMetrics || {};
-                
-                if (metrics.isNSF) {
-                    riskMetrics.nsfCount++;
-                    riskMetrics.riskFlags.push({
-                        type: 'NSF',
-                        date: transaction.date,
-                        amount: this._safeNumberConversion(transaction.amount)
-                    });
-                }
-
-                if (metrics.isOverdraft) {
-                    riskMetrics.overdraftCount++;
-                    riskMetrics.riskFlags.push({
-                        type: 'Overdraft',
-                        date: transaction.date,
-                        amount: this._safeNumberConversion(transaction.amount)
-                    });
-                }
-
-                const amount = this._safeNumberConversion(transaction.amount);
-                if (amount > this.riskThresholds.largeDepositThreshold) {
-                    riskMetrics.largeDeposits.push({
-                        date: transaction.date,
-                        amount: amount,
-                        description: transaction.description || 'No description'
-                    });
-                }
-            });
-
-            // Calculate Risk Score
-            const riskScore = this._calculateRiskScore(riskMetrics);
-            riskMetrics.overallRiskScore = riskScore;
-
-            const detailedAnalysis = await this._generateDetailedAnalysis(transactions, riskMetrics);
-
-            return {
-                riskMetrics,
-                recommendedAction: this._getRiskRecommendation(riskScore),
-                detailedAnalysis
-            };
-        } catch (error) {
-            console.error('Error analyzing statement risk:', error);
-            return {
-                riskMetrics: { ...riskMetrics, overallRiskScore: 0 },
-                recommendedAction: 'Error in risk analysis - manual review required',
-                detailedAnalysis: {
-                    transactionAnalysis: { totalTransactions: transactions.length },
-                    riskFactors: { 
-                        highRisk: [], 
-                        mediumRisk: [], 
-                        lowRisk: [] 
-                    },
-                    trends: {
-                        balanceTrend: null,
-                        transactionFrequency: null,
-                        seasonality: null
-                    }
-                }
-            };
+  /**
+   * Calculates total deposits and withdrawals from a list of transactions
+   * @param {Array} transactions The list of transactions to analyze
+   * @returns {Object} Object containing totalDeposits, totalWithdrawals and counts
+   * @throws {Error} If transactions parameter is not an array
+   */
+  calculateTotalDepositsAndWithdrawals(transactions) {
+    if (!Array.isArray(transactions)) {
+      throw new Error('Transactions must be an array');
+    }
+    return transactions.reduce((acc, transaction) => {
+      if (transaction && typeof transaction.amount === 'number') {
+        if (transaction.amount > 0) {
+          acc.totalDeposits += transaction.amount;
+          acc.depositCount++;
+        } else {
+          acc.totalWithdrawals += Math.abs(transaction.amount);
+          acc.withdrawalCount++;
         }
+      }
+      return acc;
+    }, {
+      totalDeposits: 0,
+      totalWithdrawals: 0,
+      depositCount: 0,
+      withdrawalCount: 0
+    });
+  }
+
+  /**
+   * Calculates NSF (Non-Sufficient Funds) related metrics
+   * @param {Array} transactions The list of transactions to analyze
+   * @returns {Object} Object containing NSF metrics
+   * @throws {Error} If transactions parameter is not an array
+   */
+  calculateNSFMetrics(transactions) {
+    if (!Array.isArray(transactions)) {
+      throw new Error('Transactions must be an array');
     }
 
-    _calculateRiskScore(metrics) {
-        let score = 100;
+    const nsfKeywords = [
+      'nsf', 'insufficient funds', 'overdraft', 'returned check',
+      'returned item', 'bounce', 'non-sufficient', 'overdraw',
+      'insufficient', 'returned deposit', 'reject', 'decline',
+      'unavailable funds', 'return fee', 'chargeback', 'reversal',
+      'dishonored', 'unpaid', 'refer to maker'
+    ];
 
-        // Deduct for NSFs
-        score -= (metrics.nsfCount * 15);
+    const nsfTransactions = transactions.filter(transaction => {
+      if (transaction && transaction.description) {
+        const description = transaction.description.toLowerCase();
+        return nsfKeywords.some(keyword => description.includes(keyword));
+      }
+      return false;
+    });
 
-        // Deduct for Overdrafts
-        score -= (metrics.overdraftCount * 10);
+    return {
+      nsfCount: nsfTransactions.length,
+      nsfTotal: nsfTransactions.reduce((sum, t) => sum + Math.abs(t.amount), 0),
+      nsfTransactions
+    };
+  }
 
-        // Analyze Large Deposits
-        const largeDepositImpact = this._assessLargeDeposits(metrics.largeDeposits);
-        score -= largeDepositImpact;
-
-        // Ensure score stays within 0-100
-        return Math.max(0, Math.min(100, score));
+  /**
+   * Calculates the average daily balance for a list of transactions
+   * @param {Array} transactions The list of transactions to analyze
+   * @param {number} openingBalance The opening balance before these transactions
+   * @returns {Object} Object containing averageDailyBalance and other balance metrics
+   * @throws {Error} If transactions parameter is not an array
+   */
+  calculateAverageDailyBalance(transactions, openingBalance = 0) {
+    if (!Array.isArray(transactions)) {
+      throw new Error('Transactions must be an array');
     }
 
-    _assessLargeDeposits(deposits) {
-        if (!deposits || deposits.length === 0) return 0;
-
-        // Calculate total deposit amount
-        const totalDepositAmount = deposits.reduce((sum, deposit) => sum + deposit.amount, 0);
-
-        // Calculate risk impact based on:
-        // 1. Number of large deposits
-        // 2. Ratio to total transactions
-        // 3. Frequency pattern
-        let riskImpact = 0;
-
-        // Impact for number of large deposits
-        riskImpact += deposits.length * 5;
-
-        // Impact for deposit concentration
-        const averageDeposit = totalDepositAmount / deposits.length;
-        if (averageDeposit > this.riskThresholds.largeDepositThreshold * 2) {
-            riskImpact += 10;
-        }
-
-        // Cap the maximum impact
-        return Math.min(riskImpact, 30);
+    if (typeof openingBalance !== 'number' || isNaN(openingBalance)) {
+      throw new Error('Opening balance must be a number');
     }
 
-    _identifyMediumRiskFactors(metrics) {
-        const factors = [];
-        // Check for single large deposit
-        if (metrics.largeDeposits.length > 0) {
-            factors.push('Multiple Large Deposits');
-        }
-        if (metrics.depositVolatility > this.riskThresholds.depositVolatility) {
-            factors.push('High Deposit Volatility');
-        }
-        return factors;
+    if (transactions.length === 0) {
+      return {
+        averageDailyBalance: openingBalance,
+        lowestBalance: openingBalance,
+        highestBalance: openingBalance,
+        periodDays: 0
+      };
     }
 
-    _analyzeCashFlow(transactions) {
-        const dailyBalances = new Map();
-        let runningBalance = 0;
+    const sortedTransactions = [...transactions].sort((a, b) => 
+      new Date(a.date) - new Date(b.date)
+    );
 
-        try {
-            // Handle invalid dates gracefully
-            transactions.forEach(transaction => {
-                let dateStr;
-                try {
-                    const date = new Date(transaction.date);
-                    if (isNaN(date.getTime())) {
-                        throw new Error('Invalid date');
-                    }
-                    dateStr = date.toISOString().split('T')[0];
-                } catch (e) {
-                    dateStr = 'invalid-date';
-                }
+    // Get date range
+    const startDate = new Date(sortedTransactions[0].date);
+    const endDate = new Date(sortedTransactions[sortedTransactions.length - 1].date);
+    const daysCovered = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
 
-                // Handle invalid amounts
-                const amount = Number(transaction.amount);
-                runningBalance += isNaN(amount) ? 0 : amount;
-                dailyBalances.set(dateStr, runningBalance);
-            });
+    // Track running balance and extremes
+    let runningBalance = openingBalance;
+    let totalBalance = openingBalance;
+    let lowestBalance = openingBalance;
+    let highestBalance = openingBalance;
+    let currentDate = new Date(startDate);
+    let daysTracked = 1;
 
-            return {
-                averageDailyBalance: this._calculateAverage([...dailyBalances.values()]),
-                balanceVolatility: this._calculateVolatility([...dailyBalances.values()]),
-                lowestDailyBalance: Math.min(...dailyBalances.values()),
-                highestDailyBalance: Math.max(...dailyBalances.values())
-            };
-        } catch (error) {
-            console.error('Cash flow analysis error:', error);
-            return {
-                averageDailyBalance: 0,
-                balanceVolatility: 0,
-                lowestDailyBalance: 0,
-                highestDailyBalance: 0
-            };
-        }
+    for (const transaction of sortedTransactions) {
+      const transactionDate = new Date(transaction.date);
+      
+      // Add previous balance for days without transactions
+      while (currentDate < transactionDate) {
+        totalBalance += runningBalance;
+        currentDate.setDate(currentDate.getDate() + 1);
+        daysTracked++;
+      }
+
+      runningBalance += transaction.amount;
+      totalBalance += runningBalance;
+      lowestBalance = Math.min(lowestBalance, runningBalance);
+      highestBalance = Math.max(highestBalance, runningBalance);
+      daysTracked++;
     }
 
-    _getRiskRecommendation(score) {
-        if (score >= 80) return 'Low Risk - Proceed with standard underwriting';
-        if (score >= 60) return 'Moderate Risk - Additional documentation recommended';
-        return 'High Risk - Enhanced due diligence required';
+    return {
+      averageDailyBalance: Math.round((totalBalance / daysCovered) * 100) / 100,
+      lowestBalance: Math.round(lowestBalance * 100) / 100,
+      highestBalance: Math.round(highestBalance * 100) / 100,
+      periodDays: daysCovered
+    };
+  }
+
+  /**
+   * Calculates income stability metrics
+   * @param {Array} transactions The list of transactions to analyze
+   * @returns {Object} Object containing income stability metrics
+   */
+  calculateIncomeStability(transactions) {
+    // Filter credit transactions (deposits)
+    const deposits = transactions
+      .filter(t => t.amount > 0)
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Group deposits by month
+    const monthlyDeposits = deposits.reduce((acc, deposit) => {
+      const month = new Date(deposit.date).toISOString().substring(0, 7);
+      acc[month] = (acc[month] || 0) + deposit.amount;
+      return acc;
+    }, {});
+
+    const monthlyAmounts = Object.values(monthlyDeposits);
+    
+    // Calculate metrics
+    const averageMonthlyIncome = monthlyAmounts.reduce((sum, amount) => sum + amount, 0) / monthlyAmounts.length;
+    const incomeVariance = monthlyAmounts.reduce((sum, amount) => {
+      const diff = amount - averageMonthlyIncome;
+      return sum + (diff * diff);
+    }, 0) / monthlyAmounts.length;
+
+    return {
+      averageMonthlyIncome,
+      incomeVariance,
+      monthlyDeposits,
+      stabilityScore: this._calculateStabilityScore(incomeVariance, averageMonthlyIncome)
+    };
+  }
+
+  /**
+   * Calculate business-related metrics
+   * @param {Array} transactions The list of transactions to analyze
+   * @returns {Object} Object containing business activity metrics
+   */
+  calculateBusinessMetrics(transactions) {
+    const businessKeywords = ['PAYPAL', 'SQUARE', 'STRIPE', 'SHOPIFY', 'VENDOR', 'INVENTORY'];
+    const businessTransactions = transactions.filter(transaction => {
+      const description = transaction.description.toUpperCase();
+      return businessKeywords.some(keyword => description.includes(keyword));
+    });
+
+    const businessDeposits = businessTransactions.filter(t => t.amount > 0);
+    const businessExpenses = businessTransactions.filter(t => t.amount < 0);
+
+    return {
+      totalBusinessDeposits: businessDeposits.reduce((sum, t) => sum + t.amount, 0),
+      totalBusinessExpenses: Math.abs(businessExpenses.reduce((sum, t) => sum + t.amount, 0)),
+      businessTransactionCount: businessTransactions.length,
+      hasBusinessActivity: businessTransactions.length > 0,
+      businessTransactions
+    };
+  }
+
+  /**
+   * Calculate overall Veritas Score
+   * @param {Object} data Analysis data including all metrics
+   * @returns {Object} Object containing Veritas score and factor breakdown
+   */
+  async calculateVeritasScore(data) {
+    const {
+      transactions,
+      nsfMetrics,
+      balanceMetrics,
+      incomeMetrics,
+      businessMetrics
+    } = data;
+
+    // Base score starts at 700
+    let score = 700;
+
+    // NSF Impact (-50 points per NSF, max -150)
+    score -= Math.min(nsfMetrics.nsfCount * 50, 150);
+
+    // Balance Impact (max +/- 100)
+    const balanceImpact = this._calculateBalanceImpact(balanceMetrics);
+    score += balanceImpact;
+
+    // Income Stability Impact (max +/- 100)
+    const stabilityImpact = this._calculateStabilityImpact(incomeMetrics);
+    score += stabilityImpact;
+
+    // Transaction Volume and Pattern Impact (max +50)
+    const transactionImpact = this._calculateTransactionImpact(transactions);
+    score += transactionImpact;
+
+    // Business Activity Impact (max +50)
+    if (businessMetrics.hasBusinessActivity) {
+      const businessImpact = this._calculateBusinessImpact(businessMetrics);
+      score += businessImpact;
     }
 
-    _calculateAverage(values) {
-        if (!values.length) return 0;
-        return values.reduce((sum, value) => sum + value, 0) / values.length;
-    }
+    // Ensure score stays within bounds (300-850)
+    score = Math.max(300, Math.min(850, score));
 
-    _calculateVolatility(values) {
-        if (values.length < 2) return 0;
-        const avg = this._calculateAverage(values);
-        const squareDiffs = values.map(value => Math.pow(value - avg, 2));
-        return Math.sqrt(this._calculateAverage(squareDiffs));
-    }
+    return {
+      score,
+      factors: {
+        nsfImpact: -Math.min(nsfMetrics.nsfCount * 50, 150),
+        balanceImpact,
+        stabilityImpact,
+        transactionImpact,
+        businessImpact: businessMetrics.hasBusinessActivity ? 
+          this._calculateBusinessImpact(businessMetrics) : 0
+      }
+    };
+  }
 
-    async _generateDetailedAnalysis(transactions, riskMetrics) {
-        return {
-            transactionAnalysis: {
-                totalTransactions: transactions.length,
-                totalNSF: riskMetrics.nsfCount,
-                totalOverdrafts: riskMetrics.overdraftCount,
-                largeDepositCount: riskMetrics.largeDeposits.length
-            },
-            riskFactors: {
-                highRisk: this._identifyHighRiskFactors(riskMetrics),
-                mediumRisk: this._identifyMediumRiskFactors(riskMetrics),
-                lowRisk: this._identifyLowRiskFactors(riskMetrics)
-            },
-            trends: await this._analyzeTrends(transactions),
-            recommendations: this._generateRecommendations(riskMetrics)
-        };
-    }
+  /**
+   * Helper method to calculate stability score
+   */
+  _calculateStabilityScore(variance, averageIncome) {
+    if (averageIncome === 0) return 0;
+    const coefficientOfVariation = Math.sqrt(variance) / averageIncome;
+    return Math.max(0, 100 * (1 - coefficientOfVariation));
+  }
 
-    _identifyHighRiskFactors(metrics) {
-        const factors = [];
-        if (metrics.nsfCount > this.riskThresholds.nsfLimit) {
-            factors.push('High NSF Activity');
-        }
-        if (metrics.overdraftCount > this.riskThresholds.overdraftLimit) {
-            factors.push('Frequent Overdrafts');
-        }
-        return factors;
-    }
+  /**
+   * Helper method to calculate balance impact on score
+   */
+  _calculateBalanceImpact(balanceMetrics) {
+    const { averageDailyBalance, lowestBalance } = balanceMetrics;
+    if (averageDailyBalance <= 0) return -100;
+    if (lowestBalance < 0) return -50;
+    
+    const balanceScore = Math.min(100, (averageDailyBalance / 5000) * 100);
+    return Math.floor(balanceScore);
+  }
 
-    _identifyMediumRiskFactors(metrics) {
-        const factors = [];
-        // Check for single large deposit
-        if (metrics.largeDeposits.length > 0) {
-            factors.push('Multiple Large Deposits');
-        }
-        if (metrics.depositVolatility > this.riskThresholds.depositVolatility) {
-            factors.push('High Deposit Volatility');
-        }
-        return factors;
-    }
+  /**
+   * Helper method to calculate stability impact on score
+   */
+  _calculateStabilityImpact(incomeMetrics) {
+    const { stabilityScore, averageMonthlyIncome } = incomeMetrics;
+    if (averageMonthlyIncome === 0) return -100;
+    return Math.floor(stabilityScore - 50);
+  }
 
-    _identifyLowRiskFactors(metrics) {
-        const factors = [];
-        if (metrics.averageDailyBalance > this.riskThresholds.minDailyBalance) {
-            factors.push('Maintains Minimum Balance');
-        }
-        return factors;
-    }
+  /**
+   * Helper method to calculate transaction impact on score
+   */
+  _calculateTransactionImpact(transactions) {
+    if (transactions.length < 5) return 0;
+    return Math.min(50, Math.floor(transactions.length / 2));
+  }
 
-    async _analyzeTrends(transactions) {
-        if (!transactions.length) {
-            return {
-                balanceTrend: null,
-                transactionFrequency: null,
-                seasonality: null
-            };
-        }
+  /**
+   * Helper method to calculate business impact on score
+   */
+  _calculateBusinessImpact(businessMetrics) {
+    const { totalBusinessDeposits, totalBusinessExpenses } = businessMetrics;
+    if (totalBusinessDeposits === 0) return 0;
+    
+    const profitRatio = (totalBusinessDeposits - totalBusinessExpenses) / totalBusinessDeposits;
+    return Math.floor(Math.min(50, profitRatio * 100));
+  }
+
+  /**
+   * Analyze overall risk and generate comprehensive report
+   * @param {Array} transactions The list of transactions to analyze
+   * @param {Object} statement The bank statement data
+   * @returns {Object} Comprehensive risk analysis report
+   */
+  async analyzeRisk(transactions, statement) {
+    try {
+      // Calculate all metrics
+      const nsfMetrics = this.calculateNSFMetrics(transactions);
+      const balanceMetrics = this.calculateAverageDailyBalance(
+        transactions, 
+        statement.openingBalance
+      );
+      const incomeMetrics = this.calculateIncomeStability(transactions);
+      const businessMetrics = this.calculateBusinessMetrics(transactions);
+      
+      // Calculate Veritas Score
+      const veritasScore = await this.calculateVeritasScore({
+        transactions,
+        nsfMetrics,
+        balanceMetrics,
+        incomeMetrics,
+        businessMetrics
+      });
+
+      // Categorize transactions
+      const categorizedTransactions = await this._categorizeTransactions(transactions);
+
+      return {
+        score: veritasScore.score,
+        factors: veritasScore.factors,
+        metrics: {
+          nsf: nsfMetrics,
+          balance: balanceMetrics,
+          income: incomeMetrics,
+          business: businessMetrics
+        },
+        categorizedTransactions,
+        riskLevel: this._determineRiskLevel(veritasScore.score)
+      };
+    } catch (error) {
+      this.logger.error('Error in analyzeRisk:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Analyze transaction data for risk factors.
+   * This is an alias for analyzeRisk to maintain compatibility.
+   * @param {Array} transactions - The list of transactions to analyze.
+   * @param {number} [openingBalance=0] - The opening balance.
+   * @returns {Promise<Object>} A risk analysis object.
+   */
+  async analyzeTransactions(transactions, openingBalance = 0) {
+    this.logger.info('analyzeTransactions called, delegating to analyzeRisk.');
+    return this.analyzeRisk(transactions, openingBalance);
+  }
+
+  /**
+   * Helper method to categorize transactions using LLM service and caching
+   */
+  async _categorizeTransactions(transactions) {
+    const categorized = [];
+
+    for (const transaction of transactions) {
+      try {
+        // Check cache first
+        const cached = await TransactionCategory.findCachedCategory(transaction.description);
         
-        // Sort transactions by date
-        const sortedTransactions = [...transactions].sort((a, b) => 
-            new Date(a.date) - new Date(b.date)
+        if (cached) {
+          categorized.push({
+            ...transaction,
+            category: cached.category,
+            confidence: cached.confidence,
+            source: 'cache'
+          });
+          continue;
+        }
+
+        // Use LLM service for uncached transactions
+        const { category, confidence } = await this.llmService.categorizeTransaction(transaction);
+        
+        // Cache the result
+        await TransactionCategory.cacheCategory(
+          transaction.description,
+          category,
+          confidence,
+          'LLM'
         );
 
-        return {
-            balanceTrend: this._calculateBalanceTrend(sortedTransactions),
-            transactionFrequency: this._calculateTransactionFrequency(sortedTransactions),
-            seasonality: transactions.length < 30 ? null : this._detectSeasonality(sortedTransactions)
-        };
-    }
-
-    _generateRecommendations(metrics) {
-        const recommendations = [];
-        
-        if (metrics.overallRiskScore < 60) {
-            recommendations.push('Additional collateral may be required');
-            recommendations.push('Consider higher interest rate');
-        } else if (metrics.overallRiskScore < 80) {
-            recommendations.push('Standard underwriting process recommended');
-            recommendations.push('Monitor NSF/Overdraft activity');
-        } else {
-            recommendations.push('Favorable risk profile');
-            recommendations.push('Standard terms applicable');
-        }
-
-        return recommendations;
-    }
-
-    _calculateBalanceTrend(sortedTransactions) {
-        if (!sortedTransactions.length) return null;
-
-        let runningBalance = 0;
-        const balances = sortedTransactions.map(t => {
-            runningBalance += t.amount;
-            return {
-                date: t.date,
-                balance: runningBalance
-            };
+        categorized.push({
+          ...transaction,
+          category,
+          confidence,
+          source: 'llm'
         });
-
-        // Calculate trend direction and strength
-        const trend = {
-            direction: 'stable',
-            strength: 'moderate',
-            averageBalance: this._calculateAverage(balances.map(b => b.balance)),
-            volatility: this._calculateVolatility(balances.map(b => b.balance))
-        };
-
-        // Determine trend direction
-        const firstBalance = balances[0].balance;
-        const lastBalance = balances[balances.length - 1].balance;
-        if (lastBalance > firstBalance * 1.1) trend.direction = 'increasing';
-        if (lastBalance < firstBalance * 0.9) trend.direction = 'decreasing';
-
-        // Determine trend strength
-        const volatilityRatio = trend.volatility / trend.averageBalance;
-        if (volatilityRatio > 0.5) trend.strength = 'high';
-        if (volatilityRatio < 0.2) trend.strength = 'low';
-
-        return trend;
+      } catch (error) {
+        this.logger.error('Error categorizing transaction:', error);
+        categorized.push({
+          ...transaction,
+          category: 'Uncategorized',
+          confidence: 0,
+          source: 'error'
+        });
+      }
     }
 
-    _calculateTransactionFrequency(sortedTransactions) {
-        if (!sortedTransactions.length) return null;
+    return categorized;
+  }
 
-        const frequencyMap = new Map();
-        let prevDate = null;
-        let daysBetween = [];
-
-        try {
-            sortedTransactions.forEach(transaction => {
-                let currentDate;
-                try {
-                    currentDate = new Date(transaction.date);
-                    if (isNaN(currentDate.getTime())) {
-                        throw new Error('Invalid date');
-                    }
-                } catch (error) {
-                    console.warn(`Invalid date found: ${transaction.date}`);
-                    return; // Skip this transaction
-                }
-
-                if (prevDate) {
-                    const days = Math.max(0, (currentDate - prevDate) / (1000 * 60 * 60 * 24));
-                    daysBetween.push(days);
-                }
-                prevDate = currentDate;
-
-                // Safe date key generation
-                const dateKey = this._formatDateKey(currentDate);
-                frequencyMap.set(dateKey, (frequencyMap.get(dateKey) || 0) + 1);
-            });
-
-            return {
-                averageDaysBetweenTransactions: this._calculateAverage(daysBetween) || 0,
-                maxTransactionsPerDay: Math.max(...frequencyMap.values(), 0),
-                transactionsPerDay: this._calculateAverage([...frequencyMap.values()]) || 0,
-                totalDays: frequencyMap.size
-            };
-        } catch (error) {
-            console.error('Error calculating transaction frequency:', error);
-            return {
-                averageDaysBetweenTransactions: 0,
-                maxTransactionsPerDay: 0,
-                transactionsPerDay: 0,
-                totalDays: 0
-            };
-        }
-    }
-
-    _formatDateKey(date) {
-        try {
-            return date.toISOString().split('T')[0];
-        } catch (error) {
-            return 'invalid-date';
-        }
-    }
-
-    _detectSeasonality(transactions) {
-        if (!transactions || transactions.length < 30) {
-            return null;
-        }
-
-        try {
-            // Group transactions by month and weekday
-            const monthlyData = new Map();
-            const weekdayData = new Map();
-
-            transactions.forEach(transaction => {
-                try {
-                    const date = new Date(transaction.date);
-                    if (isNaN(date.getTime())) return;
-
-                    const month = date.getMonth();
-                    const weekday = date.getDay();
-                    const amount = Number(transaction.amount) || 0;
-
-                    // Aggregate monthly data
-                    monthlyData.set(month, (monthlyData.get(month) || 0) + amount);
-                    
-                    // Aggregate weekday data
-                    weekdayData.set(weekday, (weekdayData.get(weekday) || 0) + amount);
-                } catch (error) {
-                    console.warn('Error processing transaction date:', error);
-                }
-            });
-
-            // Analyze patterns
-            const monthlyPattern = this._analyzePattern([...monthlyData.values()]);
-            const weekdayPattern = this._analyzePattern([...weekdayData.values()]);
-
-            return {
-                monthlyPattern,
-                weekdayPattern,
-                confidence: Math.max(monthlyPattern.confidence, weekdayPattern.confidence)
-            };
-        } catch (error) {
-            console.error('Error detecting seasonality:', error);
-            return null;
-        }
-    }
-
-    _analyzePattern(values) {
-        if (!values || values.length < 2) {
-            return { hasPattern: false, confidence: 0 };
-        }
-
-        const avg = this._calculateAverage(values);
-        const variance = values.map(v => Math.abs(v - avg) / avg);
-        const varianceScore = this._calculateAverage(variance);
-
-        return {
-            hasPattern: varianceScore > 0.3,
-            confidence: Math.min(100, varianceScore * 100),
-            peak: Math.max(...values),
-            trough: Math.min(...values),
-            varianceScore
-        };
-    }
-
-    _handleAnalysisError(error, context) {
-        console.error(`Analysis error in ${context}:`, error);
-        return this.errorRecoveryDefaults;
-    }
-
-    _safeNumberConversion(value, defaultValue = 0) {
-        if (value === null || value === undefined) return defaultValue;
-        const converted = Number(value);
-        if (isNaN(converted) || !isFinite(converted)) return defaultValue;
-        return converted;
-    }
-
-    _safeDateConversion(dateStr) {
-        try {
-            const date = new Date(dateStr);
-            return isNaN(date.getTime()) ? null : date;
-        } catch {
-            return null;
-        }
-    }
+  /**
+   * Helper method to determine risk level from score
+   */
+  _determineRiskLevel(score) {
+    if (score >= 750) return 'LOW';
+    if (score >= 650) return 'MODERATE';
+    if (score >= 550) return 'MEDIUM';
+    if (score >= 450) return 'HIGH';
+    return 'VERY_HIGH';
+  }
 }
 
-export default new RiskAnalysisService();
+// Create singleton instance
+const riskAnalysisService = new RiskAnalysisService();
+
+export { riskAnalysisService as default, RiskAnalysisService };

@@ -7,6 +7,13 @@ const IndustryStandards = {
     }
 };
 
-module.exports = {
+const standards = {
     IndustryStandards
 };
+
+export default standards;
+
+// Add this at the end for CommonJS compatibility
+if (typeof module !== 'undefined') {
+  module.exports = standards;
+}

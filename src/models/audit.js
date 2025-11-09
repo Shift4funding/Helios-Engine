@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const auditSchema = new mongoose.Schema({
     requestId: {
@@ -34,4 +34,5 @@ const auditSchema = new mongoose.Schema({
     timestamps: true
 });
 
-module.exports = mongoose.model('Audit', auditSchema);
+const Audit = mongoose.models.Audit || mongoose.model('Audit', auditSchema);
+export default Audit;

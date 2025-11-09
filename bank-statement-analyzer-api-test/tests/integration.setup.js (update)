@@ -1,0 +1,25 @@
+const { MongoMemoryServer } = require('mongodb-memory-server');
+const mongoose = require('mongoose');
+
+let mongoServer;
+
+async function setup() {
+    mongoServer = await MongoMemoryServer.create({
+        binary: {
+            version: '7.0.0',
+            skipMD5: true
+        }
+    });
+    const mongoUri = mongoServer.getUri();
+    await mongoose.connect(mongoUri, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true
+    });
+}
+
+async function teardown() {
+    await mongoose.disconnect();
+    await mongoServer.stop();
+}
+
+module.exports = { setup, teardown };

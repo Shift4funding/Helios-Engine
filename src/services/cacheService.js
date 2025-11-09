@@ -58,4 +58,4 @@ class MemoryCacheService {
     }
 }
 
-module.exports = new MemoryCacheService();
+export default new MemoryCacheService();

@@ -76,4 +76,4 @@ class AuditService {
     }
 }
 
-module.exports = new AuditService();
+export default new AuditService();

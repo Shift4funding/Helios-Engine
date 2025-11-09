@@ -1,12 +1,12 @@
 {
-  "watch": ["src/"],
+  "watch": ["src"],
   "ext": "js,json",
-  "ignore": [
-    "src/**/*.test.js",
-    "node_modules/**/node_modules"
-  ],
+  "ignore": ["src/**/*.test.js", "node_modules"],
+  "exec": "node",
   "env": {
     "NODE_ENV": "development"
   },
-  "verbose": true
+  "verbose": false,
+  "restartable": "rs",
+  "delay": "1000"
 }

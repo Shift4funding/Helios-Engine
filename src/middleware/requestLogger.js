@@ -1,39 +1,29 @@
-const morgan = require('morgan');
-const logger = require('../config/logger');
+import logger from '../utils/logger.js';
 
-// Custom format that includes request ID and user info
-morgan.token('request-id', (req) => req.id);
-morgan.token('user', (req) => req.user ? req.user.id : 'anonymous');
+/**
+ * Logs HTTP requests
+ */
+export const requestLogger = (req, res, next) => {
+    const startTime = Date.now();
 
-// Skip logging for test environment and health checks
-const skipLogging = (req, res) => {
-    return process.env.NODE_ENV === 'test' || 
-           req.path === '/health' ||
-           req.path === '/metrics';
+    // Store original end function
+    const originalEnd = res.end;
+
+    // Override end function
+    res.end = function(...args) {
+        const duration = Date.now() - startTime;
+        const userId = req.user?.id || 'anonymous';
+        const method = req.method || 'UNKNOWN';
+        const url = req.originalUrl || req.url || 'unknown';
+        const statusCode = res.statusCode || 0;
+
+        logger.http(`${method} ${url} ${statusCode} - ${duration}ms - User: ${userId}`);
+
+        // Call original end
+        originalEnd.apply(res, args);
+    };
+
+    next();
 };
 
-// Custom error handler for morgan
-const handleError = (err) => {
-    logger.error('Request logging error:', err);
-};
-
-// Create logger middleware with custom format
-const requestLogger = morgan(
-    ':request-id :remote-addr :user ":method :url HTTP/:http-version" :status :res[content-length] :response-time ms',
-    {
-        stream: {
-            write: (message) => {
-                try {
-                    logger.http(message.trim());
-                } catch (error) {
-                    handleError(error);
-                }
-            }
-        },
-        skip: skipLogging,
-        handleError
-    }
-);
-
-// Export middleware
-module.exports = requestLogger;
+export default requestLogger;

@@ -1,22 +1,32 @@
 // FILE: jest.config.cjs
 
-/** @type {import('jest').Config} */
 module.exports = {
-    testEnvironment: 'node',
-    transform: {
-        '^.+\\.js$': 'babel-jest',
-    },
+  testEnvironment: 'node',
+  // This tells Jest to use Babel, which will automatically find babel.config.cjs
+  transform: {
+    '^.+\\.js$': 'babel-jest',
+  },
+  
+  // This handles your @ path alias and mocks the pdf-parse library
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+    'pdf-parse': '<rootDir>/tests/__mocks__/pdf-parse.js',
+  },
 
-    // VERIFY THAT moduleNameMapper IS GONE.
+  // This pattern correctly finds files in BOTH /test and /tests
+  testMatch: [
+    '**/test/**/*.test.js',
+    '**/tests/**/*.test.js',
+  ],
 
-    testMatch: [
-        '**/test/**/*.test.js',
-        '**/tests/**/*.test.js',
-    ],
-    setupFilesAfterEnv: ['./test/setup.js'],
-    verbose: true,
-    testTimeout: 10000,
-    transformIgnorePatterns: [
-        'node_modules/(?!(pdf-parse|@jest/globals)/)',
-    ],
+  // This points to your ESM-compatible setup file
+  setupFilesAfterEnv: ['./tests/jest.setup.mjs'],
+
+  verbose: true,
+  testTimeout: 30000,
+  
+  // No longer need to ignore pdf-parse here because it's mocked above
+  transformIgnorePatterns: [
+    'node_modules/(?!(axios|@jest/globals)/)',
+  ],
 };

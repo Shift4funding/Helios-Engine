@@ -1,79 +1,44 @@
-const sanitizeHtml = require('sanitize-html');
-const xss = require('xss');
-const logger = require('../config/logger');
+import sanitizeHtml from 'sanitize-html';
 
-const sanitizeOptions = {
-    allowedTags: [], // No HTML tags allowed
-    allowedAttributes: {}, // No attributes allowed
-    disallowedTagsMode: 'recursiveEscape'
-};
-
-const sanitizeValue = (value) => {
-    if (typeof value === 'string') {
-        // HTML sanitization
-        const htmlSanitized = sanitizeHtml(value, sanitizeOptions);
-        // XSS prevention
-        return xss(htmlSanitized);
+/**
+ * Recursively sanitizes HTML in request body
+ * @param {Object} obj - Object to sanitize
+ * @returns {Object} Sanitized object
+ */
+function sanitizeObject(obj) {
+  if (!obj) return obj;
+  
+  if (typeof obj === 'string') {
+    return sanitizeHtml(obj, {
+      allowedTags: [],
+      allowedAttributes: {}
+    });
+  }
+  
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeObject(item));
+  }
+  
+  if (typeof obj === 'object') {
+    const sanitized = {};
+    for (const key in obj) {
+      sanitized[key] = sanitizeObject(obj[key]);
     }
-    return value;
-};
+    return sanitized;
+  }
+  
+  return obj;
+}
 
-const sanitizeObject = (obj) => {
-    if (Array.isArray(obj)) {
-        return obj.map(item => sanitizeObject(item));
-    }
-    
-    if (obj !== null && typeof obj === 'object') {
-        const sanitized = {};
-        for (const [key, value] of Object.entries(obj)) {
-            sanitized[key] = sanitizeObject(value);
-        }
-        return sanitized;
-    }
-    
-    return sanitizeValue(obj);
-};
+/**
+ * Middleware to sanitize request body
+ */
+export function sanitizeRequest(req, res, next) {
+  if (req.body) {
+    req.body = sanitizeObject(req.body);
+  }
+  next();
+}
 
-// Mock sanitizer for testing
-const sanitizeRequest = (req, res, next) => {
-    if (process.env.NODE_ENV === 'test') {
-        return next();
-    }
-
-    try {
-        // Simple sanitization for now
-        if (req.body) {
-            Object.keys(req.body).forEach(key => {
-                if (typeof req.body[key] === 'string') {
-                    req.body[key] = req.body[key].trim();
-                }
-            });
-        }
-
-        // Sanitize query parameters
-        if (req.query) {
-            req.query = sanitizeObject(req.query);
-        }
-
-        // Sanitize URL parameters
-        if (req.params) {
-            req.params = sanitizeObject(req.params);
-        }
-
-        // Don't sanitize file uploads
-        if (req.file || req.files) {
-            logger.debug('Skipping sanitization for file upload');
-        }
-
-        next();
-    } catch (error) {
-        logger.error('Sanitization error:', error);
-        next(error);
-    }
-};
-
-module.exports = {
-    sanitizeRequest,
-    sanitizeValue, // Export for use in other parts of the application
-    sanitizeObject
-};
+// Export as both named and default
+export default sanitizeRequest;

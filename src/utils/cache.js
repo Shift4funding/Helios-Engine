@@ -1,15 +1,9 @@
-import { LRUCache } from 'lru-cache';
+import LRUCache from 'lru-cache';
 
-const cache = new LRUCache({
+const options = {
     max: 500,
-    ttl: 1000 * 60 * 5 // 5 minutes
-});
-
-export const cacheRequest = async (key, fn) => {
-    if (cache.has(key)) {
-        return cache.get(key);
-    }
-    const result = await fn();
-    cache.set(key, result);
-    return result;
+    ttl: 1000 * 60 * 5, // 5 minutes
+    updateAgeOnGet: true
 };
+
+export const cache = new LRUCache(options);

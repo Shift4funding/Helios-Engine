@@ -1,126 +1,226 @@
-import { isDeepStrictEqual } from 'node:util';
-import { PDFParserService } from './pdfParserService.js';
-import { cacheService } from '../utils/index.js';
+import pdfService from './pdfService.js';
+import transactionCategorizationService from './transactionCategorizationService.js';
+import riskAnalysisService from './riskAnalysisService.js';
+import reportGeneratorService from './reportGeneratorService.js';
+import Statement from '../models/Statement.js';
+import Transaction from '../models/Transaction.js';
+import logger from '../utils/logger.js';
 
 class AnalysisService {
-    async analyzeStatement(filePath, bankType) {
-        try {
-            // Generate unique analysis ID
-            const analysisId = `analysis_${Date.now()}`;
-            
-            // Parse PDF and extract transactions
-            const parsedData = await PDFParserService.parsePDF(filePath, bankType);
-            
-            // Perform analysis
-            const analysis = {
-                id: analysisId,
-                summary: this.generateSummary(parsedData?.transactions ?? []),
-                categories: await PDFParserService.categorizeTransactions(parsedData?.transactions),
-                trends: this.analyzeTrends(parsedData?.transactions ?? []),
-                timestamp: new Date().toISOString()
-            };
+  async analyzeStatement(statementId, userId) {
+    try {
+      logger.info(`Starting analysis for statement ${statementId}`);
 
-            // Cache results
-            await cacheService.set(`analysis:${analysisId}`, analysis);
-            
-            return analysis;
-        } catch (error) {
-            throw new Error(`Analysis failed: ${error.message}`);
+      // 1. Get the statement
+      const statement = await Statement.findOne({ _id: statementId, userId });
+      if (!statement) {
+        throw new Error('Statement not found');
+      }
+
+      // Update status to processing
+      statement.status = 'processing';
+      await statement.save();
+
+      // 2. Parse PDF and extract transactions
+      const extractedData = await pdfService.extractTransactions(statement.filePath);
+      
+      // 3. Save transactions to database
+      const transactions = await this.saveTransactions(extractedData.transactions, statementId, userId);
+      
+      // 4. Categorize transactions
+      const categorizedTransactions = await this.categorizeTransactions(transactions);
+      
+      // 5. Perform risk analysis
+      const riskAnalysis = await riskAnalysisService.analyzeTransactions(categorizedTransactions);
+      
+      // 6. Generate report
+      const report = await reportGeneratorService.generateReport({
+        statement,
+        transactions: categorizedTransactions,
+        riskAnalysis,
+        summary: this.generateSummary(categorizedTransactions, riskAnalysis)
+      });
+
+      // 7. Update statement with analysis results
+      statement.status = 'completed';
+      statement.analysis = {
+        totalTransactions: categorizedTransactions.length,
+        totalIncome: this.calculateTotalIncome(categorizedTransactions),
+        totalExpenses: this.calculateTotalExpenses(categorizedTransactions),
+        riskScore: riskAnalysis.overallRiskScore,
+        categorySummary: this.generateCategorySummary(categorizedTransactions),
+        reportPath: report.filePath
+      };
+      await statement.save();
+
+      logger.info(`Analysis completed for statement ${statementId}`);
+      return statement;
+
+    } catch (error) {
+      logger.error(`Analysis failed for statement ${statementId}:`, error);
+      
+      // Update statement status to failed
+      await Statement.findByIdAndUpdate(statementId, { 
+        status: 'failed',
+        error: error.message 
+      });
+      
+      throw error;
+    }
+  }
+
+  async saveTransactions(transactionData, statementId, userId) {
+    const transactions = [];
+    
+    for (const txData of transactionData) {
+      const transaction = new Transaction({
+        statementId,
+        userId,
+        date: new Date(txData.date),
+        description: txData.description,
+        amount: txData.amount,
+        type: txData.amount > 0 ? 'credit' : 'debit',
+        balance: txData.balance,
+        originalDescription: txData.description,
+        metadata: {
+          lineNumber: txData.lineNumber,
+          rawText: txData.rawText
         }
+      });
+      
+      await transaction.save();
+      transactions.push(transaction);
     }
+    
+    return transactions;
+  }
 
-    generateSummary(transactions) {
-        return {
-            totalIncome: transactions.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0),
-            totalExpenses: Math.abs(transactions.filter(t => t.amount < 0).reduce((sum, t) => sum + t.amount, 0)),
-            transactionCount: transactions.length,
-            dateRange: {
-                start: new Date(Math.min(...transactions.map(t => new Date(t.date)))),
-                end: new Date(Math.max(...transactions.map(t => new Date(t.date))))
-            }
+  async categorizeTransactions(transactions) {
+    const categorized = [];
+    
+    for (const transaction of transactions) {
+      const category = await transactionCategorizationService.categorize(transaction);
+      transaction.category = category.category;
+      transaction.subcategory = category.subcategory;
+      transaction.confidence = category.confidence;
+      transaction.merchant = category.merchant;
+      await transaction.save();
+      categorized.push(transaction);
+    }
+    
+    return categorized;
+  }
+
+  calculateTotalIncome(transactions) {
+    return transactions
+      .filter(t => t.type === 'credit')
+      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  }
+
+  calculateTotalExpenses(transactions) {
+    return transactions
+      .filter(t => t.type === 'debit')
+      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  }
+
+  generateCategorySummary(transactions) {
+    const summary = {};
+    
+    transactions.forEach(transaction => {
+      const category = transaction.category || 'Uncategorized';
+      if (!summary[category]) {
+        summary[category] = {
+          count: 0,
+          totalAmount: 0,
+          transactions: []
         };
+      }
+      
+      summary[category].count++;
+      summary[category].totalAmount += Math.abs(transaction.amount);
+      summary[category].transactions.push(transaction._id);
+    });
+    
+    return summary;
+  }
+
+  generateSummary(transactions, riskAnalysis) {
+    const totalIncome = this.calculateTotalIncome(transactions);
+    const totalExpenses = this.calculateTotalExpenses(transactions);
+    const netFlow = totalIncome - totalExpenses;
+    
+    return {
+      period: this.calculatePeriod(transactions),
+      totalTransactions: transactions.length,
+      totalIncome,
+      totalExpenses,
+      netFlow,
+      averageTransactionAmount: transactions.length > 0 
+        ? transactions.reduce((sum, t) => sum + Math.abs(t.amount), 0) / transactions.length 
+        : 0,
+      categorySummary: this.generateCategorySummary(transactions),
+      riskSummary: {
+        overallScore: riskAnalysis.overallRiskScore,
+        flaggedTransactions: riskAnalysis.flaggedTransactions.length,
+        topRisks: riskAnalysis.risks.slice(0, 3)
+      }
+    };
+  }
+
+  calculatePeriod(transactions) {
+    if (transactions.length === 0) {
+      return { start: null, end: null };
     }
+    
+    const dates = transactions.map(t => new Date(t.date));
+    const start = new Date(Math.min(...dates));
+    const end = new Date(Math.max(...dates));
+    
+    return { start, end };
+  }
 
-    analyzeTrends(transactions) {
-        // Group by month
-        const monthly = transactions.reduce((acc, trans) => {
-            const date = new Date(trans.date);
-            const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-            
-            acc[monthKey] = acc[monthKey] || { income: 0, expenses: 0 };
-            if (trans.amount > 0) {
-                acc[monthKey].income += trans.amount;
-            } else {
-                acc[monthKey].expenses += Math.abs(trans.amount);
-            }
-            
-            return acc;
-        }, {});
-
-        return {
-            monthly,
-            averageMonthlyIncome: Object.values(monthly).reduce((sum, m) => sum + m.income, 0) / Object.keys(monthly).length,
-            averageMonthlyExpenses: Object.values(monthly).reduce((sum, m) => sum + m.expenses, 0) / Object.keys(monthly).length
-        };
+  async getAnalysisStatus(statementId, userId) {
+    const statement = await Statement.findOne({ _id: statementId, userId });
+    if (!statement) {
+      throw new Error('Statement not found');
     }
+    
+    return {
+      status: statement.status,
+      progress: this.calculateProgress(statement),
+      analysis: statement.analysis,
+      error: statement.error
+    };
+  }
 
-    async generateZohoReport(transactions) {
-        return {
-            financialMetrics: {
-                totalIncome: this.calculateTotalIncome(transactions),
-                totalExpenses: this.calculateTotalExpenses(transactions),
-                netCashFlow: this.calculateNetCashFlow(transactions),
-                categoryBreakdown: this.getCategoryBreakdown(transactions)
-            },
-            trends: {
-                monthly: this.getMonthlyTrends(transactions),
-                recurring: this.findRecurringTransactions(transactions)
-            },
-            insights: await this.generateInsights(transactions)
-        };
-    }
-
-    findRecurringTransactions(transactions) {
-        const transactionGroups = new Map();
-        
-        for (const trans of transactions) {
-            const key = `${Math.abs(trans.amount)}_${trans.description}`;
-            if (!transactionGroups.has(key)) {
-                transactionGroups.set(key, []);
-            }
-            transactionGroups.get(key).push(trans);
-        }
-
-        return Array.from(transactionGroups.entries())
-            .filter(([_, group]) => group.length > 1)
-            .map(([key, group]) => ({
-                amount: Math.abs(group[0].amount),
-                description: group[0].description,
-                frequency: this.calculateFrequency(group),
-                occurrences: group.length
-            }));
-    }
-
-    async analyzeData(data) {
-        // Replace _.get with optional chaining
-        const value = data?.nested?.property;
-        
-        // Replace _.isEqual with isDeepStrictEqual
-        if (isDeepStrictEqual(objA, objB)) {
-            // ...existing code...
-        }
-        
-        // Replace _.merge with Object.assign or spread
-        const merged = { ...defaultOptions, ...userOptions };
-    }
+  calculateProgress(statement) {
+    const statusProgress = {
+      'pending': 0,
+      'uploading': 10,
+      'processing': 50,
+      'completed': 100,
+      'failed': 0
+    };
+    
+    return statusProgress[statement.status] || 0;
+  }
 }
 
-export const analysisService = new AnalysisService();
+export default new AnalysisService();
 
-// Replace lodash.get with optional chaining
-const result = data?.analysis?.details;
-
-// Replace lodash.isEqual with isDeepStrictEqual
-if (isDeepStrictEqual(objA, objB)) {
-    // ...existing code...
-}
+// In your statement model test file
+const createValidStatement = (overrides = {}) => {
+  return {
+    userId: new mongoose.Types.ObjectId(),
+    bankName: 'Test Bank',
+    accountName: 'Checking Account',
+    accountNumber: '1234567890',
+    fileName: 'statement.pdf',
+    startDate: new Date('2023-01-01'),
+    endDate: new Date('2023-01-31'),
+    openingBalance: 1000,
+    closingBalance: 1500,
+    status: 'processed', // Check valid enum values in your model
+    ...overrides
+  };
+};

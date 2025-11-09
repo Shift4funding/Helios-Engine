@@ -1,16 +1,29 @@
+import { z } from 'zod';
 import { ValidationError } from '../utils/errors.js';
 
-const { body, header, query } = require('express-validator');
+// Validation schemas using Zod
+export const apiKeySchema = z.object({
+  'x-api-key': z.string()
+    .min(32)
+    .max(64)
+    .regex(/^[a-zA-Z0-9]+$/, 'API key must contain only alphanumeric characters')
+});
 
-const analysisValidation = [
-    // API Key validation
-    header('X-API-Key')
-        .exists()
-        .withMessage('API key is required')
-        .isString()
-        .withMessage('API key must be a string')
-        .isLength({ min: 32, max: 64 })
-        .withMessage('Invalid API key format'),
+export const analysisRequestSchema = z.object({
+  dealId: z.string().min(1, 'Deal ID is required'),
+  metadata: z.object({
+    requestedBy: z.string().max(100).optional(),
+    priority: z.enum(['low', 'medium', 'high']).optional().default('medium')
+  }).optional(),
+  dateRange: z.object({
+    start: z.string().datetime(),
+    end: z.string().datetime()
+  }).optional().refine(data => !data || new Date(data.end) > new Date(data.start), {
+    message: 'End date must be after start date'
+  }),
+  options: z.object({
+    notify: z.boolean().optional().default(false)
+  }).optional().default({})
 
     // Zoho integration validation
     body('zohoRecordId')

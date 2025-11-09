@@ -1,38 +1,95 @@
-const Redis = require('ioredis');
-const { logger } = require('../utils');
+import Redis from 'ioredis';
+import logger from '../utils/logger.js';
 
-const redisConfig = {
-    host: process.env.REDIS_HOST,
-    port: parseInt(process.env.REDIS_PORT),
-    username: process.env.REDIS_USERNAME,
+let redisClient = null;
+
+// Skip Redis initialization in test environment
+if (process.env.NODE_ENV === 'test' || process.env.USE_REDIS === 'false') {
+  // Create a mock Redis client for testing
+  redisClient = {
+    connect: async () => Promise.resolve(),
+    disconnect: async () => Promise.resolve(),
+    get: async () => null,
+    set: async () => 'OK',
+    del: async () => 1,
+    ping: async () => 'PONG',
+    quit: async () => 'OK',
+    on: () => {},
+    // Stream methods for testing
+    xadd: async () => '1234567890-0',
+    xread: async () => [],
+    xreadgroup: async () => [],
+    xgroup: async () => 'OK',
+    xack: async () => 1,
+    xlen: async () => 0,
+    xrange: async () => [],
+    xrevrange: async () => [],
+    xdel: async () => 1
+  };
+} else {
+  // Production Redis configuration
+  const redisConfig = {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379,
     password: process.env.REDIS_PASSWORD,
-    connectTimeout: 5000,
-    lazyConnect: true,
-    tls: true
-};
+    db: process.env.REDIS_DB || 0,
+    retryStrategy: (times) => {
+      const delay = Math.min(times * 50, 2000);
+      return delay;
+    },
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: true,
+    enableOfflineQueue: true,
+    lazyConnect: false,
+  enableAutoPipelining: true,
+  showFriendlyErrorStack: true,
+  stringNumbers: true
+  };
 
-class RedisClient {
-    constructor() {
-        this.client = null;
-    }
+  if (process.env.REDIS_URL) {
+    redisClient = new Redis(process.env.REDIS_URL, redisConfig);
+  } else {
+    redisClient = new Redis(redisConfig);
+  }
 
-    async connect() {
-        try {
-            this.client = new Redis(redisConfig);
-            await this.client.ping();
-            return this.client;
-        } catch (error) {
-            logger.error('Redis connection error:', error);
-            throw error;
-        }
-    }
+  redisClient.on('connect', () => {
+    logger.info('Redis client connected');
+  });
 
-    getClient() {
-        if (!this.client) {
-            throw new Error('Redis client not initialized');
-        }
-        return this.client;
-    }
+  redisClient.on('error', (err) => {
+    logger.error('Redis client error:', err);
+  });
+
+  redisClient.on('ready', () => {
+    logger.info('Redis client ready');
+  });
 }
 
-module.exports = new RedisClient();
+export const connectRedis = async () => {
+  if (process.env.NODE_ENV === 'test' || process.env.USE_REDIS === 'false') {
+    logger.info('Redis mocked for testing');
+    return;
+  }
+  
+  try {
+    await redisClient.ping();
+    logger.info('Redis connection established');
+  } catch (error) {
+    logger.error('Failed to connect to Redis:', error);
+    throw error;
+  }
+};
+
+export const disconnectRedis = async () => {
+  if (process.env.NODE_ENV === 'test' || process.env.USE_REDIS === 'false') {
+    return;
+  }
+  
+  if (redisClient) {
+    await redisClient.quit();
+    logger.info('Redis connection closed');
+  }
+};
+
+export { redisClient };
+export default redisClient;

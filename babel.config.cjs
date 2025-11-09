@@ -1,4 +1,4 @@
-// This is the entire content for babel.config.cjs
+// FILE: babel.config.cjs
 
 module.exports = {
   presets: [

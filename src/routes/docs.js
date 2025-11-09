@@ -1,30 +1,40 @@
-const express = require('express');
-const router = express.Router();
-const swaggerJsDoc = require('swagger-jsdoc');
-const swaggerUi = require('swagger-ui-express');
-const config = require('../config/env');
+import express from 'express';
+import swaggerJsDoc from 'swagger-jsdoc';
+import swaggerUi from 'swagger-ui-express';
+import config from '../config/env.js';
 
-// Swagger configuration with fallback values
+const router = express.Router();
+
 const swaggerOptions = {
-    definition: {
-        openapi: '3.0.0',
-        info: {
-            title: 'Bank Statement Analyzer API',
-            version: '1.0.0',
-            description: 'API for analyzing bank statements'
-        },
-        servers: [
-            {
-                url: `http://${process.env.HOST || 'localhost'}:${process.env.PORT || 3000}`
-            }
-        ]
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Bank Statement Analyzer API',
+      version: '1.0.0',
+      description: 'API for analyzing bank statements'
     },
-    apis: ['./src/routes/*.js']
+    servers: [
+      {
+        url: `http://localhost:${config.PORT || 3000}/api`,
+        description: 'Development server'
+      }
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT'
+        }
+      }
+    }
+  },
+  apis: ['./src/routes/*.js', './src/models/*.js']
 };
 
-const swaggerSpec = swaggerJsDoc(swaggerOptions);
+const swaggerSpecs = swaggerJsDoc(swaggerOptions);
 
 router.use('/', swaggerUi.serve);
-router.get('/', swaggerUi.setup(swaggerSpec));
+router.get('/', swaggerUi.setup(swaggerSpecs));
 
-module.exports = router;
+export default router;

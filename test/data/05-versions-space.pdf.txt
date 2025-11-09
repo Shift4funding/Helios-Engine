@@ -1,7 +1,0 @@
-
-
-CHASE
-Account Number: ****1234
-Statement Period: 05/01/2025 through 05/31/2025
-05/01 05/01 Direct Deposit EMPLOYER INC        +$3,000.00  $3,000.00
-05/02 05/02 Debit Card Purchase GROCERY STORE    -$150.00  $2,850.00

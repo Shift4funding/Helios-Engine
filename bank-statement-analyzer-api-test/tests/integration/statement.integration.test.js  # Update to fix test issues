@@ -1,0 +1,92 @@
+const request = require('supertest');
+const app = require('../../app'); // Adjust the path as necessary
+const MockUser = require('../../models/user'); // Adjust the path as necessary
+const MockStatement = require('../../models/statement'); // Adjust the path as necessary
+
+describe('Statement API Integration Tests', () => {
+	let authToken;
+	let testUser;
+
+	beforeAll(async () => {
+		testUser = await MockUser.create({
+			email: 'test@example.com',
+			password: 'password123'
+		});
+		authToken = 'Bearer valid_token'; // Mock token for testing
+	});
+
+	afterAll(async () => {
+		await MockUser.deleteMany({});
+		await MockStatement.deleteMany({});
+	});
+
+	describe('GET /health', () => {
+		it('should respond to health check', async () => {
+			const response = await request(app).get('/health');
+			expect(response.status).toBe(200);
+		});
+	});
+
+	describe('Error Handling and Edge Cases', () => {
+		it('should handle empty bearer token', async () => {
+			const response = await request(app).get('/api/statements').set('Authorization', '');
+			expect(response.status).toBe(401);
+			expect(response.body.message).toContain('Invalid or missing token');
+		});
+
+		it('should require authentication header', async () => {
+			const response = await request(app).get('/api/statements');
+			expect(response.status).toBe(401);
+			expect(response.body.message).toContain('No authorization header provided');
+		});
+	});
+
+	describe('POST /api/statements/upload', () => {
+		it('should upload and parse a bank statement successfully', async () => {
+			const response = await request(app)
+				.post('/api/statements/upload')
+				.set('Authorization', authToken)
+				.attach('statement', 'path/to/valid/statement.csv'); // Adjust path as necessary
+			expect(response.status).toBe(200);
+		}, 10000); // Increased timeout
+	});
+
+	describe('GET /api/statements', () => {
+		it('should retrieve all user statements', async () => {
+			const response = await request(app).get('/api/statements').set('Authorization', authToken);
+			expect(response.status).toBe(200);
+		});
+	});
+
+	describe('GET /api/statements/:id', () => {
+		it('should retrieve a specific statement', async () => {
+			const statement = await MockStatement.create({ userId: testUser._id, data: 'sample data' });
+			const response = await request(app).get(`/api/statements/${statement._id}`).set('Authorization', authToken);
+			expect(response.status).toBe(200);
+			expect(response.body.data._id).toBe(statement._id.toString());
+		});
+
+		it('should return 404 for non-existent statement', async () => {
+			const response = await request(app).get('/api/statements/nonexistent_id').set('Authorization', authToken);
+			expect(response.status).toBe(404);
+			expect(response.body.message).toBe('Statement not found');
+		});
+	});
+
+	describe('DELETE /api/statements/:id', () => {
+		it('should delete a statement', async () => {
+			const statement = await MockStatement.create({ userId: testUser._id, data: 'sample data' });
+			const response = await request(app).delete(`/api/statements/${statement._id}`).set('Authorization', authToken);
+			expect(response.status).toBe(200);
+			expect(response.body.message).toBe('Statement deleted successfully');
+		});
+
+		it('should prevent deleting other users statements', async () => {
+			const otherUser = await MockUser.create({ email: 'other@example.com', password: 'password123' });
+			const statement = await MockStatement.create({ userId: otherUser._id, data: 'sample data' });
+			const response = await request(app).delete(`/api/statements/${statement._id}`).set('Authorization', authToken);
+			expect(response.status).toBe(404);
+			expect(response.body.message).toBe('Statement not found');
+		});
+	});
+});

@@ -19,33 +19,31 @@ services:
 
   # Redis service for caching and rate limiting
   redis:
-    image: redis:alpine
+    image: redis/redis-stack:latest
     container_name: bank-analyzer-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
-      - redis_data:/data
-    restart: unless-stopped
+      - redis-data:/data
+    command: redis-server --appendonly yes --protected-mode no
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - bank-analyzer-network
 
   # MongoDB service for data storage
   mongo:
-    image: mongo:5
-    container_name: bank-analyzer-mongodb
+    image: mongo:6
+    container_name: bank-analyzer-mongo
     ports:
       - "27017:27017"
     volumes:
-      - mongodb_data:/data/db
+      - mongo-data:/data/db
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
-      - MONGO_INITDB_DATABASE=bank_analyzer
+      MONGO_INITDB_DATABASE: bank-analyzer
     restart: unless-stopped
     command: --wiredTigerCacheSizeGB 1.5
     healthcheck:
@@ -97,8 +95,8 @@ services:
       - bank-analyzer-network
 
 volumes:
-  redis_data:
-  mongodb_data:
+  redis-data:
+  mongo-data:
   prometheus_data:
   grafana_data:
 

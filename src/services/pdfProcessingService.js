@@ -12,3 +12,6 @@ class PDFProcessingService {
         // PDF processing implementation
     }
 }
+
+// Export singleton instance
+export default new PDFProcessingService();

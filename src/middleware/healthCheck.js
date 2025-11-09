@@ -1,4 +1,5 @@
-const Redis = require('ioredis');
+import Redis from 'ioredis';
+import { vi } from 'vitest';
 
 class HealthCheck {
     constructor() {
@@ -14,11 +15,22 @@ class HealthCheck {
     }
 
     getMockRedisClient() {
-        return {
-            connect: jest.fn().mockResolvedValue(true),
-            disconnect: jest.fn().mockResolvedValue(true),
-            ping: jest.fn().mockResolvedValue('PONG')
-        };
+        // Use a try/catch to handle both test and non-test environments
+        try {
+            // For Vitest environment
+            return {
+                connect: vi.fn().mockResolvedValue(true),
+                disconnect: vi.fn().mockResolvedValue(true),
+                ping: vi.fn().mockResolvedValue('PONG')
+            };
+        } catch (e) {
+            // Fallback for non-test environments
+            return {
+                connect: () => Promise.resolve(true),
+                disconnect: () => Promise.resolve(true),
+                ping: () => Promise.resolve('PONG')
+            };
+        }
     }
 
     async checkHealth() {
@@ -47,21 +59,25 @@ class HealthCheck {
         }
     }
 
+    async check(req, res) {
+        try {
+            const health = await this.checkHealth();
+            const statusCode = health.status === 'healthy' ? 200 : 503;
+            res.status(statusCode).json(health);
+        } catch (error) {
+            res.status(500).json({
+                status: 'error',
+                message: 'Error checking health status',
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+
     middleware() {
-        return async (req, res) => {
-            try {
-                const health = await this.checkHealth();
-                const statusCode = health.status === 'healthy' ? 200 : 503;
-                res.status(statusCode).json(health);
-            } catch (error) {
-                res.status(500).json({
-                    status: 'error',
-                    message: 'Error checking health status',
-                    timestamp: new Date().toISOString()
-                });
-            }
-        };
+        return async (req, res) => this.check(req, res);
     }
 }
 
-module.exports = new HealthCheck();
+// Create an instance and export it
+const healthCheck = new HealthCheck();
+export default healthCheck;

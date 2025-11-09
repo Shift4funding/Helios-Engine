@@ -1,31 +1,37 @@
-const { logger, AppError } = require('../utils');
+import logger from '../utils/logger.js';
 
-const errorHandler = (err, req, res, next) => {
-    err.statusCode = err.statusCode || 500;
-    err.status = err.status || 'error';
+export const errorHandler = (err, req, res, next) => {
+  // Log error
+  logger.error('Error occurred:', {
+    error: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+    body: req.body
+  });
 
-    // Log error
-    logger.error({
-        message: err.message,
-        stack: err.stack,
-        path: req.path,
-        method: req.method,
-        statusCode: err.statusCode
+  // Multer errors
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({
+      success: false,
+      error: 'File too large. Maximum size is 10MB.'
     });
+  }
 
-    // Don't leak error details in production
-    const errorResponse = process.env.NODE_ENV === 'development' 
-        ? {
-            status: err.status,
-            message: err.message,
-            stack: err.stack
-        }
-        : {
-            status: err.status,
-            message: err.isOperational ? err.message : 'Something went wrong'
-        };
+  // MongoDB errors
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      error: 'Validation error',
+      details: err.errors
+    });
+  }
 
-    res.status(err.statusCode).json(errorResponse);
+  // Default error
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || 'Internal server error'
+  });
 };
 
-module.exports = errorHandler;
+export default errorHandler;

@@ -1,6 +1,10 @@
 export default {
   mongodb: {
-    uri: 'mongodb://localhost:27017/test-db'
+    uri: process.env.TEST_MONGODB_URI || 'mongodb://localhost:27017/bank-statement-test',
+    options: {
+      useNewUrlParser: true,
+      useUnifiedTopology: true
+    }
   },
   redis: {
     url: 'redis://localhost:6379'
@@ -13,6 +17,8 @@ export default {
     clientSecret: 'test-secret'
   },
   jwt: {
-    secret: 'test-secret'
-  }
+    secret: process.env.JWT_SECRET || 'test-secret-key',
+    expiresIn: '1h'
+  },
+  port: 0 // Use random port for tests
 };

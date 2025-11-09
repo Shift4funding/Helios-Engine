@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "test:integration": "vitest run --config vitest.config.integration.js"
+  }
+}
